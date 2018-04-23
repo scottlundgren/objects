@@ -20,7 +20,7 @@ typedef struct _UNICODE_STRING
 typedef struct _SYSTEM_HANDLE_INFORMATION { // Information Class 16
     ULONG		ProcessId;
     BYTE		ObjectTypeNumber;
-    BYTE		Flags;						// 0x01 = PROTECT_FROM_CLOSE, 0x02 = INHERIT
+    BYTE		Flags;
     USHORT		Handle;
     PVOID		Object;
     ACCESS_MASK GrantedAccess;
@@ -30,9 +30,10 @@ typedef BOOL(CALLBACK *ENUMHANDLESCALLBACKPROC)(SYSTEM_HANDLE_INFORMATION shi, P
 
 #define MAX_TYPENAMES 128
 static PWCHAR   g_rgpwzTypeNames[MAX_TYPENAMES] = { NULL };
-static BOOL     g_fTypeNumberToNameMapInitialized = FALSE;
 
 HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam);
+
+
 
 HRESULT	NtStatusToDosError(ULONG ntStatus, DWORD &dwError)
 {
@@ -124,14 +125,6 @@ HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
                                   DWORD cchTypeName)
 {
     HRESULT hr = E_UNEXPECTED;
-    HANDLE  hEvent = NULL,
-            hMutex = NULL,
-            hTimer = NULL,
-            hPipeRead = NULL,       // file object
-            hPipeWrite = NULL,      // file object
-            hSemaphor = NULL,
-            hSection = NULL;
-    HKEY    hKey = NULL;
 
     // map of type numbers to type names is limited to MAX_TYPENAMES
     // enforce that limitation here
@@ -139,56 +132,6 @@ HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
     {
         hr = E_INVALIDARG;
         goto ErrorExit;
-    }
-
-    if (!g_fTypeNumberToNameMapInitialized)
-    {
-        // create an event, check the type, and update map
-        hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
-        if (NULL != hEvent)
-        {
-            (void)UpdateTypeMapFromHandle(hEvent, L"Event");
-        }
-
-        // bugbug - there are two types of events, this only covers one
-
-        // create a mutex, check the type, and update map
-        hMutex = CreateMutexA(NULL, FALSE, NULL);
-        if (NULL != hMutex)
-        {
-            (void)UpdateTypeMapFromHandle(hMutex, L"Mutant");
-        }
-
-        // create an anonymous pipe (under the hood this is a FILE object), check the type, and update map
-        if (CreatePipe(&hPipeRead, &hPipeWrite, NULL, 1024))
-        {
-            (void)UpdateTypeMapFromHandle(hPipeWrite, L"File");
-        }
-
-        // get the current process' window station and update map
-        // the resultant HWINSTA from GetProcessWindowStation() does not need to be closed
-        (void)UpdateTypeMapFromHandle(GetProcessWindowStation(), L"WinStation");
-
-        // get the current thread's desktop and update map
-        // the resultant HDESK from GetThreadDesktop does not need to be closed
-        (void)UpdateTypeMapFromHandle(GetThreadDesktop(GetCurrentThreadId()), L"Desktop");
-
-        // open the HKLM\SYSTEM registry key for read access and update map
-        if (ERROR_SUCCESS == RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM", 0, KEY_READ, &hKey))
-        {
-            (void)UpdateTypeMapFromHandle(hKey, L"RegKey");
-        }
-
-        // create a file mapping (section) and update map
-        // back the section by the pagefile to avoid having to reference an existing
-        //   file or create a new file
-        hSection = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READONLY, 0, 1024, NULL);
-        if (NULL != hSection)
-        {
-            (void)UpdateTypeMapFromHandle(hSection, L"Section");
-        }
-
-        g_fTypeNumberToNameMapInitialized = TRUE;
     }
 
     if (NULL == g_rgpwzTypeNames[dwTypeNumber])
@@ -208,41 +151,6 @@ HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
     hr = S_OK;
 
 ErrorExit:
-
-    if (NULL == hSection)
-    {
-        (void)CloseHandle(hSection);
-    }
-
-    if (NULL == hSemaphor)
-    {
-        (void)CloseHandle(hSemaphor);
-    }
-
-    if (NULL != hKey)
-    {
-        (void)RegCloseKey(hKey);
-    }
-
-    if (INVALID_HANDLE_VALUE == hPipeWrite)
-    {
-        (void)CloseHandle(hPipeWrite);
-    }
-
-    if (INVALID_HANDLE_VALUE == hPipeRead)
-    {
-        (void)CloseHandle(hPipeRead);
-    }
-
-    if (NULL != hMutex)
-    {
-        (void)CloseHandle(hMutex);
-    }
-
-    if (NULL != hEvent)
-    {
-        (void)CloseHandle(hEvent);
-    }
 
     return hr;
 }
@@ -465,9 +373,107 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
     return TRUE;
 }
 
+VOID InitializeObjectNumberToNameMap()
+{
+    HANDLE  hEvent = NULL,
+            hMutex = NULL,
+            hTimer = NULL,
+            hPipeRead = NULL,       // file object
+            hPipeWrite = NULL,      // file object
+            hSemaphor = NULL,
+            hSection = NULL;
+    HKEY    hKey = NULL;
+
+    // create an event, check the type, and update map
+    hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (NULL != hEvent)
+    {
+        (void)UpdateTypeMapFromHandle(hEvent, L"Event");
+    }
+
+    // bugbug - there are two types of events, this only covers one
+
+    // create a mutex, check the type, and update map
+    hMutex = CreateMutexA(NULL, FALSE, NULL);
+    if (NULL != hMutex)
+    {
+        (void)UpdateTypeMapFromHandle(hMutex, L"Mutant");
+    }
+
+    // create an anonymous pipe (under the hood this is a FILE object), check the type, and update map
+    if (CreatePipe(&hPipeRead, &hPipeWrite, NULL, 1024))
+    {
+        (void)UpdateTypeMapFromHandle(hPipeWrite, L"File");
+    }
+
+    // get the current process' window station and update map
+    // the resultant HWINSTA from GetProcessWindowStation() does not need to be closed
+    (void)UpdateTypeMapFromHandle(GetProcessWindowStation(), L"WinStation");
+
+    // get the current thread's desktop and update map
+    // the resultant HDESK from GetThreadDesktop does not need to be closed
+    (void)UpdateTypeMapFromHandle(GetThreadDesktop(GetCurrentThreadId()), L"Desktop");
+
+    // open the HKLM\SYSTEM registry key for read access and update map
+    if (ERROR_SUCCESS == RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM", 0, KEY_READ, &hKey))
+    {
+        (void)UpdateTypeMapFromHandle(hKey, L"RegKey");
+    }
+
+    // create a file mapping (section) and update map
+    // back the section by the pagefile to avoid having to reference an existing
+    //   file or create a new file
+    hSection = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READONLY, 0, 1024, NULL);
+    if (NULL != hSection)
+    {
+        (void)UpdateTypeMapFromHandle(hSection, L"Section");
+    }
+
+    // resource cleanup
+
+    if (NULL == hSection)
+    {
+        (void)CloseHandle(hSection);
+    }
+
+    if (NULL == hSemaphor)
+    {
+        (void)CloseHandle(hSemaphor);
+    }
+
+    if (NULL != hKey)
+    {
+        (void)RegCloseKey(hKey);
+    }
+
+    if (INVALID_HANDLE_VALUE == hPipeWrite)
+    {
+        (void)CloseHandle(hPipeWrite);
+    }
+
+    if (INVALID_HANDLE_VALUE == hPipeRead)
+    {
+        (void)CloseHandle(hPipeRead);
+    }
+
+    if (NULL != hMutex)
+    {
+        (void)CloseHandle(hMutex);
+    }
+
+    if (NULL != hEvent)
+    {
+        (void)CloseHandle(hEvent);
+    }
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     HRESULT hr = E_UNEXPECTED;
+
+    // initialize the global mapping of object type numbers to object names
+    // this is done to provide a human-readable version of the object type
+    InitializeObjectNumberToNameMap();
 
     hr = EnumerateHandles(LookupHandleInfoAndOutput, NULL);
 
