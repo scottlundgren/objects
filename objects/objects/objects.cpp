@@ -382,7 +382,9 @@ VOID InitializeObjectNumberToNameMap()
             hPipeRead = NULL,       // file object
             hPipeWrite = NULL,      // file object
             hSemaphor = NULL,
-            hSection = NULL;
+            hSection = NULL,
+            hProcess = NULL,
+            hThread = NULL;
     HKEY    hKey = NULL;
 
     // create an notification event, check the type, and update map
@@ -399,7 +401,19 @@ VOID InitializeObjectNumberToNameMap()
         (void)UpdateTypeMapFromHandle(hSyncronizationEvent, L"Event");
     }
 
-    // bugbug - there are two types of events, this only covers one
+    // create a semaphor, check the type and update map
+    hSemaphor = CreateSemaphoreA(NULL, 0, 1, NULL);
+    if (NULL != hSemaphor)
+    {
+        (void)UpdateTypeMapFromHandle(hSemaphor, L"Semaphor");
+    }
+
+    // create a waitable timer, check the type and update map
+    hTimer = CreateWaitableTimerA(NULL, FALSE, NULL);
+    if (NULL != hTimer)
+    {
+        (void)UpdateTypeMapFromHandle(hTimer, L"WaitableTimer");
+    }
 
     // create a mutex, check the type, and update map
     hMutex = CreateMutexA(NULL, FALSE, NULL);
@@ -437,16 +451,45 @@ VOID InitializeObjectNumberToNameMap()
         (void)UpdateTypeMapFromHandle(hSection, L"Section");
     }
 
+    // open the current process and update map
+    hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, GetCurrentProcessId());
+    if (NULL != hProcess)
+    {
+        (void)UpdateTypeMapFromHandle(hProcess, L"Process");
+    }
+
+    // open the current thread and update map
+    hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, GetCurrentThreadId());
+    if (NULL != hThread)
+    {
+        (void)UpdateTypeMapFromHandle(hThread, L"Thread");
+    }
+
     // resource cleanup
 
-    if (NULL == hSection)
+    if (NULL != hThread)
+    {
+        (void)CloseHandle(hThread);
+    }
+
+    if (NULL != hProcess)
+    {
+        (void)CloseHandle(hProcess);
+    }
+
+    if (NULL != hSection)
     {
         (void)CloseHandle(hSection);
     }
 
-    if (NULL == hSemaphor)
+    if (NULL != hSemaphor)
     {
         (void)CloseHandle(hSemaphor);
+    }
+
+    if (NULL != hTimer)
+    {
+        (void)CloseHandle(hTimer);
     }
 
     if (NULL != hKey)
@@ -454,12 +497,12 @@ VOID InitializeObjectNumberToNameMap()
         (void)RegCloseKey(hKey);
     }
 
-    if (INVALID_HANDLE_VALUE == hPipeWrite)
+    if (INVALID_HANDLE_VALUE != hPipeWrite)
     {
         (void)CloseHandle(hPipeWrite);
     }
 
-    if (INVALID_HANDLE_VALUE == hPipeRead)
+    if (INVALID_HANDLE_VALUE != hPipeRead)
     {
         (void)CloseHandle(hPipeRead);
     }
