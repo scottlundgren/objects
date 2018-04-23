@@ -26,6 +26,14 @@ typedef struct _SYSTEM_HANDLE_INFORMATION { // Information Class 16
     ACCESS_MASK GrantedAccess;
 } SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
 
+typedef BOOL(CALLBACK *ENUMHANDLESCALLBACKPROC)(SYSTEM_HANDLE_INFORMATION shi, PVOID pArg);
+
+#define MAX_TYPENAMES 128
+static PWCHAR   g_rgpwzTypeNames[MAX_TYPENAMES] = { NULL };
+static BOOL     g_fTypeNumberToNameMapInitialized = FALSE;
+
+HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam);
+
 HRESULT	NtStatusToDosError(ULONG ntStatus, DWORD &dwError)
 {
     // declaration of the semi-documented RtlNtStatusToDosError
@@ -47,19 +55,194 @@ HRESULT	NtStatusToDosError(ULONG ntStatus, DWORD &dwError)
     }
 }
 
+typedef struct _HANDLELOOKUPCALLBACKINFO
+{
+    DWORD   dwPid;
+    HANDLE  h;
+    DWORD   dwTypeNumber;
+
+} HANDLELOOKUPCALLBACKINFO, *PHANDLELOOKUPCALLBACKINFO;
+
+BOOL CALLBACK UpdateTypeMapFromHandleCallback(SYSTEM_HANDLE_INFORMATION shi, PVOID pParam)
+{
+    PHANDLELOOKUPCALLBACKINFO   pHLCI = (PHANDLELOOKUPCALLBACKINFO)pParam;
+
+    if (shi.ProcessId != pHLCI->dwPid)
+    {
+        return TRUE;
+    }
+
+    if ((HANDLE)shi.Handle != pHLCI->h)
+    {
+        return TRUE;
+    }
+
+    pHLCI->dwTypeNumber = shi.ObjectTypeNumber;
+
+    return FALSE;
+}
+
+HRESULT UpdateTypeMapFromHandle(HANDLE h,
+                                PWCHAR pwzTypeName)
+{
+    HRESULT                     hr = E_UNEXPECTED;
+    HANDLELOOKUPCALLBACKINFO    hlci = { 0 };
+
+    hlci.dwPid = GetCurrentProcessId();
+    hlci.h = h;
+    hlci.dwTypeNumber = 0;
+
+    hr = EnumerateHandles(UpdateTypeMapFromHandleCallback, &hlci);
+    if (FAILED(hr))
+    {
+        goto ErrorExit;
+    }
+
+    if (0 == hlci.dwTypeNumber)
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        goto ErrorExit;
+    }
+
+    if (hlci.dwTypeNumber >= MAX_TYPENAMES)
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_TOO_MANY_DESCRIPTORS);
+        goto ErrorExit;
+    }
+
+    g_rgpwzTypeNames[hlci.dwTypeNumber] = pwzTypeName;
+   
+    hr = S_OK;
+
+ErrorExit:
+
+    return hr;
+}
+
 HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
-                                  PWCHAR wzTypeName,
+                                  PWCHAR pwzTypeName,
                                   DWORD cchTypeName)
 {
     HRESULT hr = E_UNEXPECTED;
     HANDLE  hEvent = NULL,
             hMutex = NULL,
             hTimer = NULL,
-            hFile = INVALID_HANDLE_VALUE;
+            hPipeRead = NULL,       // file object
+            hPipeWrite = NULL,      // file object
+            hSemaphor = NULL,
+            hSection = NULL;
+    HKEY    hKey = NULL;
 
-    hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+    // map of type numbers to type names is limited to MAX_TYPENAMES
+    // enforce that limitation here
+    if (dwTypeNumber >= MAX_TYPENAMES)
+    {
+        hr = E_INVALIDARG;
+        goto ErrorExit;
+    }
+
+    if (!g_fTypeNumberToNameMapInitialized)
+    {
+        // create an event, check the type, and update map
+        hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+        if (NULL != hEvent)
+        {
+            (void)UpdateTypeMapFromHandle(hEvent, L"Event");
+        }
+
+        // bugbug - there are two types of events, this only covers one
+
+        // create a mutex, check the type, and update map
+        hMutex = CreateMutexA(NULL, FALSE, NULL);
+        if (NULL != hMutex)
+        {
+            (void)UpdateTypeMapFromHandle(hMutex, L"Mutant");
+        }
+
+        // create an anonymous pipe (under the hood this is a FILE object), check the type, and update map
+        if (CreatePipe(&hPipeRead, &hPipeWrite, NULL, 1024))
+        {
+            (void)UpdateTypeMapFromHandle(hPipeWrite, L"File");
+        }
+
+        // get the current process' window station and update map
+        // the resultant HWINSTA from GetProcessWindowStation() does not need to be closed
+        (void)UpdateTypeMapFromHandle(GetProcessWindowStation(), L"WinStation");
+
+        // get the current thread's desktop and update map
+        // the resultant HDESK from GetThreadDesktop does not need to be closed
+        (void)UpdateTypeMapFromHandle(GetThreadDesktop(GetCurrentThreadId()), L"Desktop");
+
+        // open the HKLM\SYSTEM registry key for read access and update map
+        if (ERROR_SUCCESS == RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM", 0, KEY_READ, &hKey))
+        {
+            (void)UpdateTypeMapFromHandle(hKey, L"RegKey");
+        }
+
+        // create a file mapping (section) and update map
+        // back the section by the pagefile to avoid having to reference an existing
+        //   file or create a new file
+        hSection = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READONLY, 0, 1024, NULL);
+        if (NULL != hSection)
+        {
+            (void)UpdateTypeMapFromHandle(hSection, L"Section");
+        }
+
+        g_fTypeNumberToNameMapInitialized = TRUE;
+    }
+
+    if (NULL == g_rgpwzTypeNames[dwTypeNumber])
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        goto ErrorExit;
+    }
+    
+    hr = StringCchCopyW(pwzTypeName, cchTypeName, g_rgpwzTypeNames[dwTypeNumber]);
+    if (FAILED(hr))
+    {
+        goto ErrorExit;
+    }
+
+    // could check for empty string here as a precaution
+
+    hr = S_OK;
 
 ErrorExit:
+
+    if (NULL == hSection)
+    {
+        (void)CloseHandle(hSection);
+    }
+
+    if (NULL == hSemaphor)
+    {
+        (void)CloseHandle(hSemaphor);
+    }
+
+    if (NULL != hKey)
+    {
+        (void)RegCloseKey(hKey);
+    }
+
+    if (INVALID_HANDLE_VALUE == hPipeWrite)
+    {
+        (void)CloseHandle(hPipeWrite);
+    }
+
+    if (INVALID_HANDLE_VALUE == hPipeRead)
+    {
+        (void)CloseHandle(hPipeRead);
+    }
+
+    if (NULL != hMutex)
+    {
+        (void)CloseHandle(hMutex);
+    }
+
+    if (NULL != hEvent)
+    {
+        (void)CloseHandle(hEvent);
+    }
 
     return hr;
 }
@@ -190,15 +373,13 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
     return hr;
 }
 
-HRESULT EnumerateHandles()
+HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam)
 {
     HRESULT hr = E_UNEXPECTED;
     ZwQuerySystemInformation	fnZwQuerySystemInformation = NULL;
     ULONG						cbAllocated = 1024 * 512,
                                 ulStatus;
-    DWORD                       dwCountSystemHandles,
-                                dwSucceededCount = 0,
-                                dwFailedCount = 0;
+    DWORD                       dwCountSystemHandles;
     PVOID                       pSysInfoBuffer = NULL;
     PSYSTEM_HANDLE_INFORMATION	pSystemHandleInfoBuffer = NULL;
 
@@ -259,7 +440,10 @@ HRESULT EnumerateHandles()
 
     for (ULONG i = 0; i < *((PULONG)pSysInfoBuffer); i++)
     {
-        SUCCEEDED(PrintRemoteHandleInfo(pSystemHandleInfoBuffer[i])) ? dwSucceededCount++ : dwFailedCount++;
+        if (!fnCallback(pSystemHandleInfoBuffer[i], pCallbackParam))
+        {
+            break;
+        }
     }
 
     hr = S_OK;
@@ -274,13 +458,18 @@ ErrorExit:
     return hr;
 }
 
+BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHandleValue)
+{
+    PrintRemoteHandleInfo(shi);
+
+    return TRUE;
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     HRESULT hr = E_UNEXPECTED;
 
-    hr = EnumerateHandles();
-
-
+    hr = EnumerateHandles(LookupHandleInfoAndOutput, NULL);
 
     return 0;
 }
