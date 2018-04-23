@@ -375,7 +375,8 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
 
 VOID InitializeObjectNumberToNameMap()
 {
-    HANDLE  hEvent = NULL,
+    HANDLE  hNotificationEvent = NULL,
+            hSyncronizationEvent = NULL,
             hMutex = NULL,
             hTimer = NULL,
             hPipeRead = NULL,       // file object
@@ -384,11 +385,18 @@ VOID InitializeObjectNumberToNameMap()
             hSection = NULL;
     HKEY    hKey = NULL;
 
-    // create an event, check the type, and update map
-    hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
-    if (NULL != hEvent)
+    // create an notification event, check the type, and update map
+    hNotificationEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (NULL != hNotificationEvent)
     {
-        (void)UpdateTypeMapFromHandle(hEvent, L"Event");
+        (void)UpdateTypeMapFromHandle(hNotificationEvent, L"Event");
+    }
+
+    // create an synchronization event, check the type, and update map
+    hSyncronizationEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (NULL != hSyncronizationEvent)
+    {
+        (void)UpdateTypeMapFromHandle(hSyncronizationEvent, L"Event");
     }
 
     // bugbug - there are two types of events, this only covers one
@@ -461,9 +469,14 @@ VOID InitializeObjectNumberToNameMap()
         (void)CloseHandle(hMutex);
     }
 
-    if (NULL != hEvent)
+    if (NULL != hSyncronizationEvent)
     {
-        (void)CloseHandle(hEvent);
+        (void)CloseHandle(hSyncronizationEvent);
+    }
+
+    if (NULL != hNotificationEvent)
+    {
+        (void)CloseHandle(hNotificationEvent);
     }
 }
 
@@ -474,6 +487,15 @@ int wmain(int argc, WCHAR **argv)
     // initialize the global mapping of object type numbers to object names
     // this is done to provide a human-readable version of the object type
     InitializeObjectNumberToNameMap();
+
+#ifdef _DEBUG
+    for (DWORD i = 0; i < MAX_TYPENAMES; i++)
+    {
+        if (g_rgpwzTypeNames[i]) wprintf(L"%s\n", g_rgpwzTypeNames[i]);
+    }
+    wprintf(L"\n\n");
+#endif // DEBUG
+
 
     hr = EnumerateHandles(LookupHandleInfoAndOutput, NULL);
 
