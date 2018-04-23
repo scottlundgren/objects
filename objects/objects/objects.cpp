@@ -177,16 +177,15 @@ ErrorExit:
 HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
 {
     HRESULT hr = E_UNEXPECTED;
-    WCHAR   wzName[1024] = L"";
-
-    hr = GetRemoteHandleName(shi, wzName, 1024);
+    WCHAR   wzName[1024] = L"",
+            wzType[1024] = L"";
+        
+    hr = GetRemoteHandleName(shi, wzName, 1024, wzType, 1024);
 
     if (S_OK == hr)
     {
-        wprintf(L"%4d | 0x%0.8X | %s\n", shi.ProcessId, shi.Handle, wzName);
+        wprintf(L"%4d | 0x%0.8X | %-12s | %s\n", shi.ProcessId, shi.Handle, wzType, wzName);
     }
-
-ErrorExit:
 
     return hr;
 }
