@@ -373,7 +373,9 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
     return TRUE;
 }
 
-// todo: (alpc)port, directory, symboliclink, iocompletionport
+// todo: (alpc)port, directory, symboliclink, iocompletionport,
+//       ETWRegistration, IRTimer, TpWorkerFactory, WaitCompletionPacket,
+//       RawInputManager, 
 VOID InitializeObjectNumberToNameMap()
 {
     HANDLE  hNotificationEvent = NULL,
@@ -414,7 +416,7 @@ VOID InitializeObjectNumberToNameMap()
     hTimer = CreateWaitableTimerA(NULL, FALSE, NULL);
     if (NULL != hTimer)
     {
-        (void)UpdateTypeMapFromHandle(hTimer, L"WaitableTimer");
+        (void)UpdateTypeMapFromHandle(hTimer, L"Timer");
     }
 
     // create a mutex, check the type, and update map
