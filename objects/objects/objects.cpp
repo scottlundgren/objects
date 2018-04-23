@@ -388,7 +388,8 @@ VOID InitializeObjectNumberToNameMap()
             hSection = NULL,
             hProcess = NULL,
             hThread = NULL,
-            hToken = NULL;
+            hToken = NULL,
+            hIoCompletionPort = NULL;
     HKEY    hKey = NULL;
 
     // create an notification event, check the type, and update map
@@ -469,12 +470,25 @@ VOID InitializeObjectNumberToNameMap()
         (void)UpdateTypeMapFromHandle(hThread, L"Thread");
     }
 
+    // open current process token and update map
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
     {
         (void)UpdateTypeMapFromHandle(hToken, L"Token");
     }
 
+    // create new unnamed io completion port and update map
+    // bugbug: cannot use this pipe here
+    hIoCompletionPort = CreateIoCompletionPort(hPipeRead, NULL, NULL, 1);
+    {
+        (void)UpdateTypeMapFromHandle(hIoCompletionPort, L"IoCompletionPort");
+    }
+
     // resource cleanup
+
+    if (NULL != hIoCompletionPort)
+    {
+        (void)CloseHandle(hIoCompletionPort);
+    }
 
     if (NULL != hToken)
     {
