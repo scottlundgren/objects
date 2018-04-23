@@ -2,13 +2,12 @@
 #include <strsafe.h>
 #include <stdio.h>
 
-// -- defines for ZwQueryObject ---
-typedef NTSTATUS(WINAPI *ZwQueryObject)(IN HANDLE h, IN INT /*OBJECT_INFORMATION_CLASS*/ oic, OUT PVOID ObjectInformation,
-    IN ULONG ObjectInformationLength, OUT OPTIONAL PULONG ReturnLength);
+typedef NTSTATUS(WINAPI *ZwQueryObject)(HANDLE h, INT /*OBJECT_INFORMATION_CLASS*/ oic, PVOID ObjectInformation,
+                                        ULONG ObjectInformationLength, PULONG ReturnLength);
 
-// -- defines for NtQuerySystemInformation
-typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(IN INT /*SYSTEM_INFORMATION_CLASS*/ SystemInformationClass,
-    OUT PVOID SystemInformation, IN ULONG SystemInformationLength, OUT PULONG ReturnLength OPTIONAL);
+typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(INT /*SYSTEM_INFORMATION_CLASS*/ SystemInformationClass,
+                                                   PVOID SystemInformation, IN ULONG SystemInformationLength,
+                                                   PULONG ReturnLength);
 
 typedef struct _UNICODE_STRING
 {
@@ -17,7 +16,8 @@ typedef struct _UNICODE_STRING
     PWCHAR Buffer;
 } UNICODE_STRING, *PUNICODE_STRING;
 
-typedef struct _SYSTEM_HANDLE_INFORMATION { // Information Class 16
+typedef struct _SYSTEM_HANDLE_INFORMATION
+{
     ULONG		ProcessId;
     BYTE		ObjectTypeNumber;
     BYTE		Flags;
@@ -273,9 +273,9 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
         
     hr = GetRemoteHandleName(shi, wzName, 1024, wzType, 1024);
 
-    if (S_OK == hr)
+    if (SUCCEEDED(hr))
     {
-        wprintf(L"%4d | 0x%0.8X | %-12s | %s\n", shi.ProcessId, shi.Handle, wzType, wzName);
+        wprintf(L"%4d | 0x%0.8X | %-4u | %-12s | %s\n", shi.ProcessId, shi.Handle, shi.ObjectTypeNumber, wzType, wzName);
     }
 
     return hr;
@@ -373,6 +373,7 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
     return TRUE;
 }
 
+// todo: (alpc)port, directory, symboliclink, iocompletionport
 VOID InitializeObjectNumberToNameMap()
 {
     HANDLE  hNotificationEvent = NULL,
@@ -384,7 +385,8 @@ VOID InitializeObjectNumberToNameMap()
             hSemaphor = NULL,
             hSection = NULL,
             hProcess = NULL,
-            hThread = NULL;
+            hThread = NULL,
+            hToken = NULL;
     HKEY    hKey = NULL;
 
     // create an notification event, check the type, and update map
@@ -465,7 +467,17 @@ VOID InitializeObjectNumberToNameMap()
         (void)UpdateTypeMapFromHandle(hThread, L"Thread");
     }
 
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+    {
+        (void)UpdateTypeMapFromHandle(hToken, L"Token");
+    }
+
     // resource cleanup
+
+    if (NULL != hToken)
+    {
+        (void)CloseHandle(hToken);
+    }
 
     if (NULL != hThread)
     {
