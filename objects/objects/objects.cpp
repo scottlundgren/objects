@@ -30,6 +30,7 @@ typedef BOOL(CALLBACK *ENUMHANDLESCALLBACKPROC)(SYSTEM_HANDLE_INFORMATION shi, P
 
 #define MAX_TYPENAMES 128
 static PWCHAR   g_rgpwzTypeNames[MAX_TYPENAMES] = { NULL };
+static DWORD    g_dwFileTypeNumber = -1;
 
 HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam);
 
@@ -112,6 +113,15 @@ HRESULT UpdateTypeMapFromHandle(HANDLE h,
     }
 
     g_rgpwzTypeNames[hlci.dwTypeNumber] = pwzTypeName;
+
+    // file objects are problematic with ZwQueryObject
+    // this is because for files that have outstanding syncronous IO operations,
+    //   calling ZwQueryObject will block
+    // save off the TypeNumber of the file type to special-case the name lookup later
+    if (!wcsicmp(L"File", pwzTypeName))
+    {
+        g_dwFileTypeNumber = hlci.dwTypeNumber;
+    }
    
     hr = S_OK;
 
@@ -155,11 +165,64 @@ ErrorExit:
     return hr;
 }
 
-HRESULT GetRemoteHandleName(SYSTEM_HANDLE_INFORMATION shi,
-                            PWCHAR pwzName,
-                            DWORD cchName,
-                            PWCHAR pwzType,
-                            DWORD cchType
+HRESULT GetLocalFileHandleName(HANDLE hFile,
+                               PWCHAR pwzName,
+                               DWORD cchName)
+{
+    HRESULT hr = E_UNEXPECTED;
+    BYTE    rgBuffer[8192];
+    PVOID   fnGetFileInformationByHandleEx = NULL;
+    HANDLE  hSection = NULL;
+    PVOID   pMapping = NULL;
+
+    // attempt to use GetFileInformationByHandleEx
+    // this API was introduced in Windows Vista
+    // if this approach fails for any reason, fall back to xp/2K3 method
+    while (fnGetFileInformationByHandleEx)
+    {
+        // GetFileInformationByHandleEx(hFile, FILE_NAME_INFO, (PFILE_NAME_INFO)rgBuffer, sizeof(rgBuffer));
+        // GetFinalPathNameByHandle
+        break;
+    }
+
+    hSection = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (NULL == hSection)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
+
+    pMapping = MapViewOfFile(hSection, SECTION_MAP_READ, 0, 0, 0);
+    if (NULL == pMapping)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
+
+    //GetMappedFileName()
+
+    hr = S_OK;
+
+ErrorExit:
+
+    if (NULL != pMapping)
+    {
+        (void)UnmapViewOfFile(pMapping);
+    }
+
+    if (NULL != hSection)
+    {
+        (void)CloseHandle(hSection);
+    }
+
+    return hr;
+}
+
+HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
+                                   PWCHAR pwzName,
+                                   DWORD cchName,
+                                   PWCHAR pwzType,
+                                   DWORD cchType
     )
 {
     HRESULT                     hr = E_UNEXPECTED;
@@ -202,6 +265,7 @@ HRESULT GetRemoteHandleName(SYSTEM_HANDLE_INFORMATION shi,
     }
 
     // duplicate the remote handle to the local process context
+    // this is required to use the HANDLE as a paramter to ZwQueryObject
     if (!DuplicateHandle(hRemoteProcess, (HANDLE)shi.Handle, GetCurrentProcess(), &hObject, 0, FALSE, DUPLICATE_SAME_ACCESS))
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
@@ -215,29 +279,34 @@ HRESULT GetRemoteHandleName(SYSTEM_HANDLE_INFORMATION shi,
         goto ErrorExit;
     }
 
-    ulRet = fnZwQueryObject(hObject, 1 /*ObjectNameInformation*/, ObjectTypeInformation, cbObjectTypeInformation, &cbObjectTypeInformation);
-    if (ulRet != 0 /* STATUS_SUCCESS */)
+    if (shi.ObjectTypeNumber == g_dwFileTypeNumber)
     {
-        DWORD   dwWin32Error;
-
-        hr = NtStatusToDosError(ulRet, dwWin32Error);
-        if (SUCCEEDED(hr))
+        int x = 6;
+    }
+    else
+    {
+        ulRet = fnZwQueryObject(hObject, 1 /*ObjectNameInformation*/, ObjectTypeInformation, cbObjectTypeInformation, &cbObjectTypeInformation);
+        if (ulRet != 0 /* STATUS_SUCCESS */)
         {
-            hr = HRESULT_FROM_WIN32(dwWin32Error);
+            DWORD   dwWin32Error;
+
+            hr = NtStatusToDosError(ulRet, dwWin32Error);
+            if (SUCCEEDED(hr))
+            {
+                hr = HRESULT_FROM_WIN32(dwWin32Error);
+            }
+
+            goto ErrorExit;
         }
-       
-        goto ErrorExit;
     }
 
-    PUNICODE_STRING ObjectTypeName = (PUNICODE_STRING)ObjectTypeInformation;
-
-    if (0 == ObjectTypeName->Length)
+    if (0 == ((PUNICODE_STRING)ObjectTypeInformation)->Length)
     {
         hr = S_FALSE;
         goto ErrorExit;
     }
 
-    hr = StringCchCopyW(pwzName, cchName, ObjectTypeName->Buffer);
+    hr = StringCchCopyW(pwzName, cchName, ((PUNICODE_STRING)ObjectTypeInformation)->Buffer);
     if (FAILED(hr))
     {
         goto ErrorExit;
@@ -271,7 +340,7 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
     WCHAR   wzName[1024] = L"",
             wzType[1024] = L"";
         
-    hr = GetRemoteHandleName(shi, wzName, 1024, wzType, 1024);
+    hr = GetRemoteHandleNameAndType(shi, wzName, 1024, wzType, 1024);
 
     if (SUCCEEDED(hr))
     {
@@ -283,16 +352,16 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
 
 HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam)
 {
-    HRESULT hr = E_UNEXPECTED;
+    HRESULT                     hr = E_UNEXPECTED;
     ZwQuerySystemInformation	fnZwQuerySystemInformation = NULL;
-    ULONG						cbAllocated = 1024 * 512,
+    ULONG						cbAllocated = 1024 * 1024,
                                 ulStatus;
     DWORD                       dwCountSystemHandles;
     PVOID                       pSysInfoBuffer = NULL;
     PSYSTEM_HANDLE_INFORMATION	pSystemHandleInfoBuffer = NULL;
 
     // dynamically look up ZwQuerySystemInformation
-    // ntdll is is loaded by the loader at process startup time
+    // ntdll is guaranteed to be loaded
     fnZwQuerySystemInformation = (ZwQuerySystemInformation)GetProcAddress(GetModuleHandleA("ntdll"), "ZwQuerySystemInformation");
     if (NULL == fnZwQuerySystemInformation)
     {
@@ -479,6 +548,7 @@ VOID InitializeObjectNumberToNameMap()
     // create new unnamed io completion port and update map
     // bugbug: cannot use this pipe here
     hIoCompletionPort = CreateIoCompletionPort(hPipeRead, NULL, NULL, 1);
+    if (NULL != hIoCompletionPort)
     {
         (void)UpdateTypeMapFromHandle(hIoCompletionPort, L"IoCompletionPort");
     }
