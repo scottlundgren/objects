@@ -118,7 +118,7 @@ HRESULT UpdateTypeMapFromHandle(HANDLE h,
     // this is because for files that have outstanding syncronous IO operations,
     //   calling ZwQueryObject will block
     // save off the TypeNumber of the file type to special-case the name lookup later
-    if (!wcsicmp(L"File", pwzTypeName))
+    if (!_wcsicmp(L"File", pwzTypeName))
     {
         g_dwFileTypeNumber = hlci.dwTypeNumber;
     }
@@ -336,15 +336,38 @@ ErrorExit:
 
 HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
 {
-    HRESULT hr = E_UNEXPECTED;
-    WCHAR   wzName[1024] = L"",
-            wzType[1024] = L"";
-        
+    HRESULT     hr = E_UNEXPECTED;
+    WCHAR       wzName[1024] = L"",
+                wzType[1024] = L"";
+    static BOOL fNeedToPrintHeader = TRUE;
+
+    // print column headers
+    if (fNeedToPrintHeader)
+    {
+        wprintf(L"%s | %4s | %-16s | %-10s | %s\n", L"PID ", L"Type", L"Type Name", L"HANDLE", L"Name");
+        wprintf(L"%s + %s + %s + %s + %s\n", L"----", L"----", L"----------------", L"----------", L"-----------------------------------------");
+
+        fNeedToPrintHeader = FALSE;
+    }
+
+    // get the name and human-readable type name associated with the HANDLE
+    // this is a best-effort function; the name and/or type may be empty
+    //
+    // S_OK means that the name was retrieved
+    // S_FALSE means that the object referenced by the HANDLE is unnamed
+    //
     hr = GetRemoteHandleNameAndType(shi, wzName, 1024, wzType, 1024);
 
     if (SUCCEEDED(hr))
     {
-        wprintf(L"%4d | 0x%0.8X | %-4u | %-12s | %s\n", shi.ProcessId, shi.Handle, shi.ObjectTypeNumber, wzType, wzName);
+        BOOL    fOutputUnnamedHandles = FALSE;
+
+        if (!fOutputUnnamedHandles && S_FALSE == hr)
+        {
+            return hr;
+        }
+
+        wprintf(L"%4d | %4d | %-16s | 0x%0.8X | %s\n", shi.ProcessId, shi.ObjectTypeNumber, wzType, shi.Handle, wzName);
     }
 
     return hr;
