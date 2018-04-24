@@ -9,6 +9,8 @@ typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(INT /*SYSTEM_INFORMATION_CLAS
                                                    PVOID SystemInformation, IN ULONG SystemInformationLength,
                                                    PULONG ReturnLength);
 
+typedef BOOL(WINAPI *GETFILEINFORMATIONBYHANDLEEX)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, PVOID, DWORD);
+
 typedef struct _UNICODE_STRING
 {
     USHORT Length;
@@ -169,20 +171,32 @@ HRESULT GetLocalFileHandleName(HANDLE hFile,
                                PWCHAR pwzName,
                                DWORD cchName)
 {
-    HRESULT hr = E_UNEXPECTED;
-    BYTE    rgBuffer[8192];
-    PVOID   fnGetFileInformationByHandleEx = NULL;
-    HANDLE  hSection = NULL;
-    PVOID   pMapping = NULL;
+    HRESULT                         hr = E_UNEXPECTED;
+    BYTE                            rgBuffer[8192] = { L'\0' };
+    GETFILEINFORMATIONBYHANDLEEX    fnGetFileInformationByHandleEx = NULL;
+    HANDLE                          hSection = NULL;
+    PVOID                           pMapping = NULL;
 
     // attempt to use GetFileInformationByHandleEx
     // this API was introduced in Windows Vista
     // if this approach fails for any reason, fall back to xp/2K3 method
+    fnGetFileInformationByHandleEx = (GETFILEINFORMATIONBYHANDLEEX)GetProcAddress(GetModuleHandleA("kernel32"), "GetFileInformationByHandleEx");
+
     while (fnGetFileInformationByHandleEx)
     {
-        // GetFileInformationByHandleEx(hFile, FILE_NAME_INFO, (PFILE_NAME_INFO)rgBuffer, sizeof(rgBuffer));
-        // GetFinalPathNameByHandle
-        break;
+        if (!fnGetFileInformationByHandleEx(hFile, FILE_INFO_BY_HANDLE_CLASS::FileNameInfo, rgBuffer, sizeof(rgBuffer) - sizeof(WCHAR)))
+        {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            break;
+        }
+
+        hr = StringCchCopyW(pwzName, cchName, ((PFILE_NAME_INFO)rgBuffer)->FileName);
+        if (FAILED(hr))
+        {
+            break;
+        }
+        
+        goto ErrorExit;
     }
 
     hSection = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
@@ -219,18 +233,18 @@ ErrorExit:
 }
 
 HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
-                                   PWCHAR pwzName,
-                                   DWORD cchName,
-                                   PWCHAR pwzType,
-                                   DWORD cchType
-    )
+    PWCHAR pwzName,
+    DWORD cchName,
+    PWCHAR pwzType,
+    DWORD cchType
+)
 {
     HRESULT                     hr = E_UNEXPECTED;
     HANDLE                      hRemoteProcess = NULL,
-                                hObject = NULL;
+        hObject = NULL;
     ZwQueryObject	            fnZwQueryObject = NULL;
     ULONG			            ulRet,
-                                cbObjectTypeInformation = 1024 * 2;
+        cbObjectTypeInformation = 1024 * 2;
     PBYTE			            ObjectTypeInformation = NULL;
 
     // get function pointer to ZwQueryObject
@@ -281,7 +295,7 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
 
     if (shi.ObjectTypeNumber == g_dwFileTypeNumber)
     {
-        int x = 6;
+        hr = GetLocalFileHandleName(hObject, pwzName, cchName);
     }
     else
     {
@@ -298,21 +312,19 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
 
             goto ErrorExit;
         }
-    }
 
-    if (0 == ((PUNICODE_STRING)ObjectTypeInformation)->Length)
-    {
-        hr = S_FALSE;
-        goto ErrorExit;
-    }
+        if (0 == ((PUNICODE_STRING)ObjectTypeInformation)->Length)
+        {
+            hr = S_FALSE;
+            goto ErrorExit;
+        }
 
-    hr = StringCchCopyW(pwzName, cchName, ((PUNICODE_STRING)ObjectTypeInformation)->Buffer);
-    if (FAILED(hr))
-    {
-        goto ErrorExit;
+        hr = StringCchCopyW(pwzName, cchName, ((PUNICODE_STRING)ObjectTypeInformation)->Buffer);
+        if (FAILED(hr))
+        {
+            goto ErrorExit;
+        }
     }
-
-    hr = S_OK;
 
 ErrorExit:
 
@@ -474,8 +486,8 @@ VOID InitializeObjectNumberToNameMap()
             hSyncronizationEvent = NULL,
             hMutex = NULL,
             hTimer = NULL,
-            hPipeRead = NULL,       // file object
-            hPipeWrite = NULL,      // file object
+            hPipeRead = NULL,       // file object under the covers
+            hPipeWrite = NULL,      // file object under the covers
             hSemaphor = NULL,
             hSection = NULL,
             hProcess = NULL,
