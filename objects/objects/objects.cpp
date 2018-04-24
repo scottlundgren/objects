@@ -3,85 +3,20 @@
 #include <strsafe.h>
 #include <stdio.h>
 
-#define STATUS_SUCCESS          0L
-#define OBJ_CASE_INSENSITIVE    64L
-#define DIRECTORY_QUERY         1L
-
-typedef struct _UNICODE_STRING
-{
-    USHORT Length;
-    USHORT MaximumLength;
-    PWCHAR Buffer;
-} UNICODE_STRING, *PUNICODE_STRING;
-
-typedef struct _OBJECT_ATTRIBUTES
-{
-    ULONG           Length;
-    PVOID           RootDirectory;
-    PUNICODE_STRING ObjectName;
-    ULONG           Attributes;
-    PVOID           SecurityDescriptor;
-    PVOID           SecurityQualityOfService;
-} OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
-
-typedef NTSTATUS(WINAPI *ZwQueryObject)(HANDLE h, INT /*OBJECT_INFORMATION_CLASS*/ oic, PVOID ObjectInformation,
-                                        ULONG ObjectInformationLength, PULONG ReturnLength);
-
-typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(INT /*SYSTEM_INFORMATION_CLASS*/ SystemInformationClass,
-                                                   PVOID SystemInformation, IN ULONG SystemInformationLength,
-                                                   PULONG ReturnLength);
-
-typedef NTSTATUS(WINAPI *NTOPENDIRECTORYOBJECT)(
-    _Out_  PHANDLE DirectoryHandle,
-    _In_   ACCESS_MASK DesiredAccess,
-    _In_   POBJECT_ATTRIBUTES ObjectAttributes
-    );
-
-typedef NTSTATUS(WINAPI *NTQUERYDIRECTORYOBJECT)(
-    _In_       HANDLE DirectoryHandle,
-    _Out_opt_  PVOID Buffer,
-    _In_       ULONG Length,
-    _In_       BOOLEAN ReturnSingleEntry,
-    _In_       BOOLEAN RestartScan,
-    _Inout_    PULONG Context,
-    _Out_opt_  PULONG ReturnLength
-    );
-
-typedef NTSTATUS(WINAPI *NTOPENSYMBOLICLINKOBJECT)(
-    _Out_  PHANDLE LinkHandle,
-    _In_   ACCESS_MASK DesiredAccess,
-    _In_   POBJECT_ATTRIBUTES ObjectAttributes
-    );
-
-typedef NTSTATUS(WINAPI *NTQUERYSYMBOLICLINKOBJECT)(
-    _In_       HANDLE LinkHandle,
-    _Inout_    PUNICODE_STRING LinkTarget,
-    _Out_opt_  PULONG ReturnedLength
-    );
-
-typedef BOOL(WINAPI *GETFILEINFORMATIONBYHANDLEEX)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, PVOID, DWORD);
-
-typedef struct _SYSTEM_HANDLE_INFORMATION
-{
-    ULONG		ProcessId;
-    BYTE		ObjectTypeNumber;
-    BYTE		Flags;
-    USHORT		Handle;
-    PVOID		Object;
-    ACCESS_MASK GrantedAccess;
-} SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
-
-typedef BOOL(CALLBACK *ENUMHANDLESCALLBACKPROC)(SYSTEM_HANDLE_INFORMATION shi, PVOID pArg);
-
-#define MAX_TYPENAMES 128
+#include "declarations.h"
 
 static PWCHAR   g_rgpwzTypeNames[MAX_TYPENAMES] = { NULL };
 static DWORD    g_dwFileTypeNumber = -1;
 
 HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam);
 
-
-
+// wrapper around ntdll!NtStatusToDosError
+//
+// dynamic lookup of RtlNtStatusToDosError is performed inline
+//
+// caller can use HRESULT_FROM_NT() macro to encode the NTSTATUS
+// as a HRESULT if needed
+//
 HRESULT	NtStatusToDosError(ULONG ntStatus, DWORD &dwError)
 {
     // declaration of the semi-documented RtlNtStatusToDosError
@@ -103,14 +38,6 @@ HRESULT	NtStatusToDosError(ULONG ntStatus, DWORD &dwError)
     }
 }
 
-typedef struct _HANDLELOOKUPCALLBACKINFO
-{
-    DWORD   dwPid;
-    HANDLE  h;
-    DWORD   dwTypeNumber;
-
-} HANDLELOOKUPCALLBACKINFO, *PHANDLELOOKUPCALLBACKINFO;
-
 BOOL CALLBACK UpdateTypeMapFromHandleCallback(SYSTEM_HANDLE_INFORMATION shi, PVOID pParam)
 {
     PHANDLELOOKUPCALLBACKINFO   pHLCI = (PHANDLELOOKUPCALLBACKINFO)pParam;
@@ -130,34 +57,60 @@ BOOL CALLBACK UpdateTypeMapFromHandleCallback(SYSTEM_HANDLE_INFORMATION shi, PVO
     return FALSE;
 }
 
+// given a HANDLE to an arbitrary object type, discover
+// the human-readable name of the object and update the 
+// global object type number to name map
+//
+// The HANDLE must be valid in the context of the
+// running process
+//
 HRESULT UpdateTypeMapFromHandle(HANDLE h,
                                 PWCHAR pwzTypeName)
 {
     HRESULT                     hr = E_UNEXPECTED;
     HANDLELOOKUPCALLBACKINFO    hlci = { 0 };
 
+    // the PID and HANDLE are to allow our callback proc
+    // to filter out all objects *other* than the object
+    // referenced by h
+    //
+    // because HANDLEs are unique within a process but not
+    // unique across processes, must provide both the HANDLE
+    // value and the PID
     hlci.dwPid = GetCurrentProcessId();
     hlci.h = h;
+
+    // for safety, initialize the type number to 0
+    // UpdateTypeMapFromHandleCallback will populate this field
     hlci.dwTypeNumber = 0;
 
+    // enumerate all HANDLEs across all processes on the system
+    // this is the only way (that I know of from usermode) to 
+    // retreive the object type number associated with the HANDLE
+    //
+    // the PID and HANDLE value members of hlci will be used to 
+    // identify the HANDLE of interest
     hr = EnumerateHandles(UpdateTypeMapFromHandleCallback, &hlci);
     if (FAILED(hr))
     {
         goto ErrorExit;
     }
 
+    // ensure that the HANDLE h was found in the current process
     if (0 == hlci.dwTypeNumber)
     {
         hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
         goto ErrorExit;
     }
 
+    // for safety, ensure that the type number is in range
     if (hlci.dwTypeNumber >= MAX_TYPENAMES)
     {
         hr = HRESULT_FROM_WIN32(ERROR_TOO_MANY_DESCRIPTORS);
         goto ErrorExit;
     }
 
+    // update the global mapping of object type numbers to names
     g_rgpwzTypeNames[hlci.dwTypeNumber] = pwzTypeName;
 
     // file objects are problematic with ZwQueryObject
@@ -176,6 +129,11 @@ ErrorExit:
     return hr;
 }
 
+// get the human-readable type name from the object type number
+//
+// InitializeObjectNumberToNameMap() must be called prior to
+// calling this function to initialize the global map
+//
 HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
                                   PWCHAR pwzTypeName,
                                   DWORD cchTypeName)
@@ -190,6 +148,8 @@ HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
         goto ErrorExit;
     }
 
+    // ensure that a human-readable object type name exists in the
+    // global map for the given object type number
     if (NULL == g_rgpwzTypeNames[dwTypeNumber])
     {
         hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
@@ -202,7 +162,7 @@ HRESULT GetTypeNameFromTypeNumber(DWORD dwTypeNumber,
         goto ErrorExit;
     }
 
-    // could check for empty string here as a precaution
+    // todo: could check for empty string here as a precaution
 
     hr = S_OK;
 
@@ -211,6 +171,26 @@ ErrorExit:
     return hr;
 }
 
+// get the filename associated with a given HANDLE to a file
+//
+// the HANDLE, hFile, must be a valid HANDLE in the context
+// of the current running process
+//
+// the HANDLE, hFile, must be a valid HANDLE referencing an
+// underlying FILE object.  This includes files, devices, 
+// pipes, and sockets
+//
+// GetLocalFileHandleName will not block even if there is 
+// an outstanding syncronous IO request on hFile
+//
+// GetLocalFileHandleName employs two methods internally
+// to retrieve the filename from the HANDLE.  The first is
+// the preferred mechanism but is only available on Windows
+// Vista/2k8 (major version 6) and higher.  The second method,
+// employed on major versions 5 and lower, can fail in the case
+// of zero-length files or for HANDLEs which are not granted 
+// read access
+//
 HRESULT GetLocalFileHandleName(HANDLE hFile,
                                PWCHAR pwzName,
                                DWORD cchName)
@@ -244,6 +224,14 @@ HRESULT GetLocalFileHandleName(HANDLE hFile,
         goto ErrorExit;
     }
 
+    // create a file mapping (section) object backed by the file
+    // this requires that hFile reference a real underlying file, as compared
+    // with a device, socket, or pipe
+    //
+    // it also requires that hFile be granted read rights on the underlying file
+    //
+    // this method is well-known and is documented on MSDN at:
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/aa366789(v=vs.85).aspx
     hSection = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 1, NULL);
     if (NULL == hSection)
     {
@@ -251,6 +239,9 @@ HRESULT GetLocalFileHandleName(HANDLE hFile,
         goto ErrorExit;
     }
 
+    // map the file into memory
+    // this provides us the base pointer that can be used with 
+    // GetMappedFileName()
     pMapping = MapViewOfFile(hSection, SECTION_MAP_READ, 0, 0, 0);
     if (NULL == pMapping)
     {
@@ -281,6 +272,22 @@ ErrorExit:
     return hr;
 }
 
+// given a PID, a HANDLE valid in the the context of the process identified by
+// that PID, and an object type number of the object referenced by the HANDLE,
+// retreive the object name (if any) and object type name associated with the
+// object
+//
+// the inpupt parameters (PID, HANDLE, Object Type Number) are provided as
+// members of a SYSTEM_HANDLE_INFORMATION instance
+//
+// the object name (pwzName) and object type name (pwzType) output parameters
+// will be empty strings if they cannot be found, or if the object has no name
+//
+// GetRemoteHandleNameAndType returns S_OK if the object is named and the name
+// was retrieved successfully, S_FALSE if the object is unnamed, and E_* in the
+// case of an error.  The object type name will be populated on a best-effort
+// basis
+//
 HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
                                    PWCHAR pwzName,
                                    DWORD cchName,
@@ -342,6 +349,10 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
         goto ErrorExit;
     }
 
+    // query the underlying object name given the HANDLE
+    //
+    // because ZwQueryObject can block for file objects with outstanding
+    // blocking IO, must special-case file objects and use a non-blocking mechanism
     if (shi.ObjectTypeNumber == g_dwFileTypeNumber)
     {
         hr = GetLocalFileHandleName(hObject, pwzName, cchName);
@@ -362,6 +373,7 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
             goto ErrorExit;
         }
 
+        // check for unnamed objects
         if (0 == ((PUNICODE_STRING)ObjectTypeInformation)->Length)
         {
             hr = S_FALSE;
@@ -395,6 +407,13 @@ ErrorExit:
     return hr;
 }
 
+// given a PID, a HANDLE valid in the context of the process identified by that
+// PID, and an object type number of the object referenced by the HANDLE, attempt
+// to lookup the object name and object type name and output relevent information
+// in a tabular format to stdout
+//
+// print column headers one time
+//
 HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
 {
     HRESULT     hr = E_UNEXPECTED;
@@ -434,6 +453,10 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
     return hr;
 }
 
+// enumerate all HANDLEs on the system, across all processes
+// for each enumerated HANDLE, call the caller-provided callback function
+// fnCallback with an arbitrary parameter provided by the caller
+//
 HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam)
 {
     HRESULT                     hr = E_UNEXPECTED;
@@ -499,6 +522,10 @@ HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackPara
 
     pSystemHandleInfoBuffer = (PSYSTEM_HANDLE_INFORMATION)((PULONG)pSysInfoBuffer + 1);
 
+    // loop over all returned SYSTEM_HANDLE_INFORMATION instances,
+    // invoking the caller-provided callback function for each
+    //
+    // if the callback function returns FALSE, return immediately
     for (ULONG i = 0; i < *((PULONG)pSysInfoBuffer); i++)
     {
         if (!fnCallback(pSystemHandleInfoBuffer[i], pCallbackParam))
@@ -526,6 +553,8 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
     return TRUE;
 }
 
+// Open a Windows object directory object by name
+//
 HRESULT OpenDirectory(PWCHAR pwzName, PHANDLE phDirectory)
 {
     HRESULT                 hr = E_UNEXPECTED;
@@ -572,9 +601,24 @@ ErrorExit:
     return hr;
 }
 
+// initialize a map of object type numbers to human-readable
+// object type names
+//
+// the approach is to create objects of known types using documented
+// and well-known APIs.  The result of each of these creations is a
+// HANDLE to a known type.  Then *all* HANDLEs on the system, across
+// all processes, can be enumerated.  By matching the newly-created
+// HANDLE value and the current PID, the HANDLE of interest can be
+// identified.  Then the associated object type number can be 
+// determined.
+//
+// with the object type number and the known human-readable object name,
+// a global map can be updated
+//
 // todo: (alpc)port, symboliclink, iocompletionport,
 //       ETWRegistration, IRTimer, TpWorkerFactory, WaitCompletionPacket,
-//       RawInputManager, 
+//       RawInputManager, others (see WinObj, Windows Internals, etc.)
+//
 VOID InitializeObjectNumberToNameMap()
 {
     HANDLE  hNotificationEvent = NULL,
