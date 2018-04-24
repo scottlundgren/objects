@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <psapi.h>
 #include <strsafe.h>
 #include <stdio.h>
 
@@ -180,8 +181,9 @@ HRESULT GetLocalFileHandleName(HANDLE hFile,
     // attempt to use GetFileInformationByHandleEx
     // this API was introduced in Windows Vista
     // if this approach fails for any reason, fall back to xp/2K3 method
+    //
+    // this does not include the drive.  it may be preferable to use GetFinalPathNameByHandle
     fnGetFileInformationByHandleEx = (GETFILEINFORMATIONBYHANDLEEX)GetProcAddress(GetModuleHandleA("kernel32"), "GetFileInformationByHandleEx");
-
     while (fnGetFileInformationByHandleEx)
     {
         if (!fnGetFileInformationByHandleEx(hFile, FILE_INFO_BY_HANDLE_CLASS::FileNameInfo, rgBuffer, sizeof(rgBuffer) - sizeof(WCHAR)))
@@ -199,7 +201,7 @@ HRESULT GetLocalFileHandleName(HANDLE hFile,
         goto ErrorExit;
     }
 
-    hSection = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    hSection = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 1, NULL);
     if (NULL == hSection)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
@@ -213,7 +215,11 @@ HRESULT GetLocalFileHandleName(HANDLE hFile,
         goto ErrorExit;
     }
 
-    //GetMappedFileName()
+    if (!GetMappedFileName(GetCurrentProcess(), pMapping, pwzName, cchName))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
 
     hr = S_OK;
 
