@@ -3,14 +3,9 @@
 #include <strsafe.h>
 #include <stdio.h>
 
-typedef NTSTATUS(WINAPI *ZwQueryObject)(HANDLE h, INT /*OBJECT_INFORMATION_CLASS*/ oic, PVOID ObjectInformation,
-                                        ULONG ObjectInformationLength, PULONG ReturnLength);
-
-typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(INT /*SYSTEM_INFORMATION_CLASS*/ SystemInformationClass,
-                                                   PVOID SystemInformation, IN ULONG SystemInformationLength,
-                                                   PULONG ReturnLength);
-
-typedef BOOL(WINAPI *GETFILEINFORMATIONBYHANDLEEX)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, PVOID, DWORD);
+#define STATUS_SUCCESS          0L
+#define OBJ_CASE_INSENSITIVE    64L
+#define DIRECTORY_QUERY         1L
 
 typedef struct _UNICODE_STRING
 {
@@ -18,6 +13,53 @@ typedef struct _UNICODE_STRING
     USHORT MaximumLength;
     PWCHAR Buffer;
 } UNICODE_STRING, *PUNICODE_STRING;
+
+typedef struct _OBJECT_ATTRIBUTES
+{
+    ULONG           Length;
+    PVOID           RootDirectory;
+    PUNICODE_STRING ObjectName;
+    ULONG           Attributes;
+    PVOID           SecurityDescriptor;
+    PVOID           SecurityQualityOfService;
+} OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
+
+typedef NTSTATUS(WINAPI *ZwQueryObject)(HANDLE h, INT /*OBJECT_INFORMATION_CLASS*/ oic, PVOID ObjectInformation,
+                                        ULONG ObjectInformationLength, PULONG ReturnLength);
+
+typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(INT /*SYSTEM_INFORMATION_CLASS*/ SystemInformationClass,
+                                                   PVOID SystemInformation, IN ULONG SystemInformationLength,
+                                                   PULONG ReturnLength);
+
+typedef NTSTATUS(WINAPI *NTOPENDIRECTORYOBJECT)(
+    _Out_  PHANDLE DirectoryHandle,
+    _In_   ACCESS_MASK DesiredAccess,
+    _In_   POBJECT_ATTRIBUTES ObjectAttributes
+    );
+
+typedef NTSTATUS(WINAPI *NTQUERYDIRECTORYOBJECT)(
+    _In_       HANDLE DirectoryHandle,
+    _Out_opt_  PVOID Buffer,
+    _In_       ULONG Length,
+    _In_       BOOLEAN ReturnSingleEntry,
+    _In_       BOOLEAN RestartScan,
+    _Inout_    PULONG Context,
+    _Out_opt_  PULONG ReturnLength
+    );
+
+typedef NTSTATUS(WINAPI *NTOPENSYMBOLICLINKOBJECT)(
+    _Out_  PHANDLE LinkHandle,
+    _In_   ACCESS_MASK DesiredAccess,
+    _In_   POBJECT_ATTRIBUTES ObjectAttributes
+    );
+
+typedef NTSTATUS(WINAPI *NTQUERYSYMBOLICLINKOBJECT)(
+    _In_       HANDLE LinkHandle,
+    _Inout_    PUNICODE_STRING LinkTarget,
+    _Out_opt_  PULONG ReturnedLength
+    );
+
+typedef BOOL(WINAPI *GETFILEINFORMATIONBYHANDLEEX)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, PVOID, DWORD);
 
 typedef struct _SYSTEM_HANDLE_INFORMATION
 {
@@ -32,6 +74,7 @@ typedef struct _SYSTEM_HANDLE_INFORMATION
 typedef BOOL(CALLBACK *ENUMHANDLESCALLBACKPROC)(SYSTEM_HANDLE_INFORMATION shi, PVOID pArg);
 
 #define MAX_TYPENAMES 128
+
 static PWCHAR   g_rgpwzTypeNames[MAX_TYPENAMES] = { NULL };
 static DWORD    g_dwFileTypeNumber = -1;
 
@@ -239,18 +282,18 @@ ErrorExit:
 }
 
 HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
-    PWCHAR pwzName,
-    DWORD cchName,
-    PWCHAR pwzType,
-    DWORD cchType
+                                   PWCHAR pwzName,
+                                   DWORD cchName,
+                                   PWCHAR pwzType,
+                                   DWORD cchType
 )
 {
     HRESULT                     hr = E_UNEXPECTED;
     HANDLE                      hRemoteProcess = NULL,
-        hObject = NULL;
+                                hObject = NULL;
     ZwQueryObject	            fnZwQueryObject = NULL;
     ULONG			            ulRet,
-        cbObjectTypeInformation = 1024 * 2;
+                                cbObjectTypeInformation = 1024 * 2;
     PBYTE			            ObjectTypeInformation = NULL;
 
     // get function pointer to ZwQueryObject
@@ -306,7 +349,7 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
     else
     {
         ulRet = fnZwQueryObject(hObject, 1 /*ObjectNameInformation*/, ObjectTypeInformation, cbObjectTypeInformation, &cbObjectTypeInformation);
-        if (ulRet != 0 /* STATUS_SUCCESS */)
+        if (ulRet != STATUS_SUCCESS)
         {
             DWORD   dwWin32Error;
 
@@ -483,7 +526,53 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
     return TRUE;
 }
 
-// todo: (alpc)port, directory, symboliclink, iocompletionport,
+HRESULT OpenDirectory(PWCHAR pwzName, PHANDLE phDirectory)
+{
+    HRESULT                 hr = E_UNEXPECTED;
+    NTSTATUS                ntStatus;
+    OBJECT_ATTRIBUTES       oa;
+    NTOPENDIRECTORYOBJECT   NtOpenDirectoryObject = NULL;
+    UNICODE_STRING          us;
+    size_t                  cchName;
+
+    NtOpenDirectoryObject = (NTOPENDIRECTORYOBJECT)GetProcAddress(GetModuleHandleA("ntdll"), "NtOpenDirectoryObject");
+    if (NULL == NtOpenDirectoryObject)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
+
+    hr = StringCchLengthW(pwzName, MAXSHORT, &cchName);
+    if (FAILED(hr))
+    {
+        goto ErrorExit;
+    }
+
+    oa.Length = sizeof(OBJECT_ATTRIBUTES);
+    oa.RootDirectory = NULL;
+    oa.ObjectName = &us;
+    oa.ObjectName->Length = LOWORD(cchName);
+    oa.ObjectName->MaximumLength = LOWORD(cchName);
+    oa.ObjectName->Buffer = pwzName;
+    oa.Attributes = OBJ_CASE_INSENSITIVE;
+    oa.SecurityDescriptor = NULL;
+    oa.SecurityQualityOfService = NULL;
+
+    ntStatus = NtOpenDirectoryObject(phDirectory, DIRECTORY_QUERY, &oa);
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        hr = HRESULT_FROM_NT(ntStatus);
+        goto ErrorExit;
+    }
+    
+    hr = S_OK;
+
+ErrorExit:
+
+    return hr;
+}
+
+// todo: (alpc)port, symboliclink, iocompletionport,
 //       ETWRegistration, IRTimer, TpWorkerFactory, WaitCompletionPacket,
 //       RawInputManager, 
 VOID InitializeObjectNumberToNameMap()
@@ -499,7 +588,8 @@ VOID InitializeObjectNumberToNameMap()
             hProcess = NULL,
             hThread = NULL,
             hToken = NULL,
-            hIoCompletionPort = NULL;
+            hIoCompletionPort = NULL,
+            hDirectory = NULL;
     HKEY    hKey = NULL;
 
     // create an notification event, check the type, and update map
@@ -594,7 +684,17 @@ VOID InitializeObjectNumberToNameMap()
         (void)UpdateTypeMapFromHandle(hIoCompletionPort, L"IoCompletionPort");
     }
 
+    if (SUCCEEDED(OpenDirectory(L"\\\\", &hDirectory)))
+    {
+        (void)UpdateTypeMapFromHandle(hDirectory, L"Directory");
+    }
+
     // resource cleanup
+
+    if (NULL != hDirectory)
+    {
+        (void)CloseHandle(&hDirectory);
+    }
 
     if (NULL != hIoCompletionPort)
     {
