@@ -564,6 +564,11 @@ HRESULT OpenDirectory(PWCHAR pwzName, PHANDLE phDirectory)
     UNICODE_STRING          us;
     size_t                  cchName;
 
+    // protect output parameter
+    *phDirectory = NULL;
+
+    // NtOpenDirectroyObject is documented on MSDN at https://msdn.microsoft.com/en-us/library/bb470234(v=vs.85).aspx
+    // there is no associated header or import library, so it must be dynamically loaded
     NtOpenDirectoryObject = (NTOPENDIRECTORYOBJECT)GetProcAddress(GetModuleHandleA("ntdll"), "NtOpenDirectoryObject");
     if (NULL == NtOpenDirectoryObject)
     {
