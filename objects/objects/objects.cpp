@@ -587,8 +587,8 @@ HRESULT OpenDirectory(PWCHAR pwzName, PHANDLE phDirectory)
     oa.Length = sizeof(OBJECT_ATTRIBUTES);
     oa.RootDirectory = NULL;
     oa.ObjectName = &us;
-    oa.ObjectName->Length = LOWORD(cchName);
-    oa.ObjectName->MaximumLength = LOWORD(cchName);
+    oa.ObjectName->Length = LOWORD(cchName) * sizeof(WCHAR);
+    oa.ObjectName->MaximumLength = LOWORD(cchName) * sizeof(WCHAR) + sizeof(WCHAR);
     oa.ObjectName->Buffer = pwzName;
     oa.Attributes = OBJ_CASE_INSENSITIVE;
     oa.SecurityDescriptor = NULL;
@@ -703,13 +703,12 @@ ErrorExit:
 // finally, Windows provides a global (across all sessions) view 
 // of objects in the \GLOBAL?? directory.  Enumerate that directory
 // as well, using -1 as the session Id for disambiguration
+//
 HRESULT EnumerateBaseNamedObjects()
 {
     HRESULT hr = E_UNEXPECTED;
 
-    //hr = EnumerateObjectNamespace(L"\\Sessions\\BNOLINKS");
-
-    hr = EnumerateObjectNamespace(L"\\Sessions\\1\\BaseNamedObjects");
+    hr = EnumerateObjectNamespace(L"\\Sessions\\BNOLINKS");
 
 ErrorExit:
 
