@@ -606,6 +606,42 @@ ErrorExit:
     return hr;
 }
 
+// enumerate all objects in the Windows object namespace
+// beginning with a given a starting point
+HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
+{
+    HRESULT hr = E_UNEXPECTED;
+
+
+ErrorExit:
+
+    return hr;
+}
+
+// enumerate BasedNamedObjects in the Windows object namespace
+//
+// Windows provides a per-terminal-services-session view of the 
+// BasedNamedObject namespace.  The mapping of the terminal services
+// session Id to the corresponding BasedNamedObjects directory is
+// found at \Sessions\BNOLINKS
+//
+// enumerate \Sessions\BNOLINKS and, for each session, follow the
+// symbolic link and enumerate that directory.  The session number
+// can be added to the output as a means to differentiate the 
+// named objects on a per-session basis
+//
+// finally, Windows provides a global (across all sessions) view 
+// of objects in the \GLOBAL?? directory.  Enumerate that directory
+// as well, using -1 as the session Id for disambiguration
+HRESULT EnumerateBaseNamedObjects()
+{
+    HRESULT hr = E_UNEXPECTED;
+
+ErrorExit:
+
+    return hr;
+}
+
 // initialize a map of object type numbers to human-readable
 // object type names
 //
@@ -850,7 +886,7 @@ int wmain(int argc, WCHAR **argv)
     }
     else if (0 == wcscmp(L"--basednamedobjects", argv[1]))
     {
-        // todo: do this and stuff
+        return EnumerateBaseNamedObjects();
     }
     else
     {
