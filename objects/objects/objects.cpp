@@ -404,9 +404,9 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
     HANDLE                      hRemoteProcess = NULL,
                                 hObject = NULL;
     ZwQueryObject               fnZwQueryObject = NULL;
-    ULONG			            ulRet,
+    ULONG                       ulRet,
                                 cbObjectTypeInformation = 1024 * 2;
-    PBYTE			            ObjectTypeInformation = NULL;
+    PBYTE                       ObjectTypeInformation = NULL;
 
     // get function pointer to ZwQueryObject
     fnZwQueryObject = (ZwQueryObject)GetProcAddress(GetModuleHandleA("ntdll"), "ZwQueryObject");
