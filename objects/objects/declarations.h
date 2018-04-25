@@ -30,6 +30,10 @@ typedef NTSTATUS(WINAPI *ZwQuerySystemInformation)(INT /*SYSTEM_INFORMATION_CLAS
     PVOID SystemInformation, IN ULONG SystemInformationLength,
     PULONG ReturnLength);
 
+typedef NTSTATUS(WINAPI *NTCLOSE)(
+    _In_ HANDLE Handle
+    );
+
 typedef NTSTATUS(WINAPI *NTOPENDIRECTORYOBJECT)(
     _Out_  PHANDLE DirectoryHandle,
     _In_   ACCESS_MASK DesiredAccess,

@@ -645,6 +645,8 @@ HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
 
     do
     {
+        memset(rgDirObjInfoBuffer, 0, sizeof(rgDirObjInfoBuffer));
+
         ntStatus = NtQueryDirectoryObject(hRootDir,
                                           pObjDirInfo,
                                           sizeof(rgDirObjInfoBuffer),
@@ -652,8 +654,13 @@ HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
                                           FALSE,
                                           &dwIndex,
                                           NULL);
+        if (STATUS_SUCCESS != ntStatus)
+        {
+            break;
+        }
 
-        dwIndex++;
+
+        wprintf(L"%-20s | %s\n", pObjDirInfo->ObjectName.Buffer, pObjDirInfo->ObjectTypeName.Buffer);
 
     } while (TRUE);
 
@@ -686,7 +693,7 @@ HRESULT EnumerateBaseNamedObjects()
 {
     HRESULT hr = E_UNEXPECTED;
 
-    hr = EnumerateObjectNamespace(L"\\Sessions\BNOLINKS");
+    hr = EnumerateObjectNamespace(L"\\Sessions\\BNOLINKS");
 
 ErrorExit:
 
@@ -829,8 +836,23 @@ VOID InitializeObjectNumberToNameMap()
 
     if (NULL != hDirectory)
     {
-        // bugbug: close this HANDLE
-        // (void)CloseHandle(&hDirectory);
+        NTCLOSE NtClose;
+
+        // the object directory HANDLE was opened via the native API
+        // when debugging in Visual Studio, this can cause an exception
+        // this can be avoided by using the native API to close the HANDLE
+        // via NtClose.  The underlying HANDLE is closed without a debugger
+        // attached in either case
+
+        NtClose = (NTCLOSE)GetProcAddress(GetModuleHandleA("ntdll"), "NtClose");
+        if (NULL != NtClose)
+        {
+            (void)NtClose(hDirectory);
+        }
+        else
+        {
+            (void)CloseHandle(hDirectory);
+        }
     }
 
     if (NULL != hIoCompletionPort)
