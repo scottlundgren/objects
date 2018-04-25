@@ -555,7 +555,58 @@ BOOL CALLBACK LookupHandleInfoAndOutput(SYSTEM_HANDLE_INFORMATION shi, PVOID pHa
     return TRUE;
 }
 
+// Open a Windows symbolic link by name
+// Always open with the SYMBOLIC_LINK_QUERY access mask
+//
+HRESULT OpenSymbolicLink(PWCHAR pwzLinkName, PHANDLE phSymbolicLink)
+{
+    HRESULT                     hr = E_UNEXPECTED;
+    NTSTATUS                    ntStatus;
+    NTOPENSYMBOLICLINKOBJECT    NtOpenSymbolicLinkObject = NULL;
+    UNICODE_STRING              usLinkName;
+    OBJECT_ATTRIBUTES           oa;
+    size_t                      cchName;
+
+    // look up addresse of NtOpenSymbolicLinkObject, exported from ntdll
+    NtOpenSymbolicLinkObject = (NTOPENSYMBOLICLINKOBJECT)GetProcAddress(GetModuleHandleA("ntdll"), "NtOpenSymbolicLinkObject");
+    if (NULL == NtOpenSymbolicLinkObject)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
+
+    hr = StringCchLengthW(pwzLinkName, MAX_PATH, &cchName);
+    if (FAILED(hr))
+    {
+        goto ErrorExit;
+    }
+
+    oa.Length = sizeof(OBJECT_ATTRIBUTES);
+    oa.RootDirectory = NULL;
+    oa.ObjectName = &usLinkName;
+    oa.ObjectName->Length = LOWORD(cchName) * sizeof(WCHAR);
+    oa.ObjectName->MaximumLength = LOWORD(cchName) * sizeof(WCHAR) + sizeof(WCHAR);
+    oa.ObjectName->Buffer = pwzLinkName;
+    oa.Attributes = OBJ_CASE_INSENSITIVE;
+    oa.SecurityDescriptor = NULL;
+    oa.SecurityQualityOfService = NULL;
+
+    ntStatus = NtOpenSymbolicLinkObject(phSymbolicLink, SYMBOLIC_LINK_QUERY, &oa);
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        hr = HRESULT_FROM_NT(ntStatus);
+        goto ErrorExit;
+    }
+
+    hr = S_OK;
+
+ErrorExit:
+
+    return hr;
+}
+
 // Open a Windows object directory object by name
+// Always open with the DIRECTORY_QUERY access mask
 //
 HRESULT OpenDirectory(PWCHAR pwzName, PHANDLE phDirectory)
 {
@@ -620,19 +671,28 @@ ErrorExit:
 //
 HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
 {
-    HRESULT                 hr = E_UNEXPECTED;
-    NTSTATUS                ntStatus;
-    NTQUERYDIRECTORYOBJECT  NtQueryDirectoryObject = NULL;
-    BYTE                    rgDirObjInfoBuffer[1024 * 8] = { 0 };
-    POBJDIR_INFORMATION     pObjDirInfo = (POBJDIR_INFORMATION)rgDirObjInfoBuffer;
-    HANDLE                  hRootDir = NULL;
-    DWORD                   dwIndex = 0;
-    WCHAR                   wzSessionPath[MAX_PATH];
+    HRESULT                     hr = E_UNEXPECTED;
+    NTSTATUS                    ntStatus;
+    NTQUERYDIRECTORYOBJECT      NtQueryDirectoryObject = NULL;
+    NTQUERYSYMBOLICLINKOBJECT   NtQuerySymbolicLinkObject = NULL;
+    BYTE                        rgDirObjInfoBuffer[1024 * 8] = { 0 };
+    POBJDIR_INFORMATION         pObjDirInfo = (POBJDIR_INFORMATION)rgDirObjInfoBuffer;
+    HANDLE                      hRootDir = NULL;
+    DWORD                       dwIndex = 0;
 
-    // look up address of NtQueryDirectoryObject as exported from ntdll
-    // while NtQueryDirectoryObject is documented on MSDN, there is no
+    // look up addresses of NtQueryDirectoryObject and
+    // NtQuerySymbolicLinkObject.  Both are exported from ntdll
+    //
+    // NtQueryDirectoryObject is documented on MSDN, there is no
     // associated header or import library
     NtQueryDirectoryObject = (NTQUERYDIRECTORYOBJECT)GetProcAddress(GetModuleHandleA("ntdll"), "NtQueryDirectoryObject");
+    if (NULL == NtQueryDirectoryObject)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
+
+    NtQuerySymbolicLinkObject = (NTQUERYSYMBOLICLINKOBJECT)GetProcAddress(GetModuleHandleA("ntdll"), "NtQuerySymbolicLinkObject");
     if (NULL == NtQueryDirectoryObject)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
@@ -665,16 +725,66 @@ HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
 
         wprintf(L"%-20s | %s\n", pObjDirInfo->ObjectName.Buffer, pObjDirInfo->ObjectTypeName.Buffer);
 
+        // by convention, we expect there to be <n> objects in \Sessions\BNOLINKS with
+        // the following three characteristics:
+        //
+        //   (1) the object name is the string representation of of an active terminal
+        //       services session id.  this means we expect the object name to be a 
+        //       string representation of an integer
+        //
+        //   (2) the object type name be "SymbolicLink"
+        //
+        //   (3) the symbolic link point to a directory object
+        //
+        // begin by validating that the object type is "SymbolicLink"
+        //
+        if (0 != wcscmp(L"SymbolicLink", pObjDirInfo->ObjectTypeName.Buffer))
+        {
+            continue;
+        }
+
+        // validate that this appears to be a valid terminal services session id
+        // another approach is to enumerate windows terminal services sessions with WTSEnumerateSessions
+        // and validate against that list
+        //
+        if (!(0 == wcscmp(L"0", pObjDirInfo->ObjectName.Buffer) || _wtoi(pObjDirInfo->ObjectName.Buffer) > 0))
+        {
+            continue;
+        }
+
+        WCHAR                       wzSessionPath[MAX_PATH],
+                                    wzSymbolicLinkTarget[MAX_PATH] = { L'\0' };
+        HANDLE                      hSymbolicLink = NULL;
+        UNICODE_STRING              usSymbolicLinkTarget;
+
+        // at this point we have SymbolicLink with a name matching a terminal services session id
+        // build the fully qualified object path
         hr = StringCchPrintfW(wzSessionPath, MAX_PATH, L"%s\\%s", pwzRoot, pObjDirInfo->ObjectName.Buffer);
         if (FAILED(hr))
         {
             goto ErrorExit;
         }
 
-        HANDLE h;
-        hr = OpenDirectory(wzSessionPath, &h);
+        // open the symbolic link itself in order to determine the target of the link
+        hr = OpenSymbolicLink(wzSessionPath, &hSymbolicLink);
+        if (FAILED(hr))
+        {
+            goto ErrorExit;
+        }
 
-        int x = 6;
+        usSymbolicLinkTarget.Buffer = wzSymbolicLinkTarget;
+        usSymbolicLinkTarget.Length = 0;
+        usSymbolicLinkTarget.MaximumLength = sizeof(wzSymbolicLinkTarget);
+
+
+        ntStatus = NtQuerySymbolicLinkObject(hSymbolicLink, &usSymbolicLinkTarget, NULL);
+        if (STATUS_SUCCESS != ntStatus)
+        {
+            hr = HRESULT_FROM_NT(ntStatus);
+            goto ErrorExit;
+        }
+
+        wprintf(L"%s\n", usSymbolicLinkTarget.Buffer);
 
     } while (TRUE);
 

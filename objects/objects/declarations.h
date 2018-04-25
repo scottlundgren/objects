@@ -4,7 +4,8 @@
 
 #define STATUS_SUCCESS          0L
 #define OBJ_CASE_INSENSITIVE    64L
-#define DIRECTORY_QUERY         1L
+#define DIRECTORY_QUERY         0x0001
+#define SYMBOLIC_LINK_QUERY     0x0001
 
 typedef struct _UNICODE_STRING
 {
