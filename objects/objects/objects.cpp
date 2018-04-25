@@ -403,7 +403,7 @@ HRESULT GetRemoteHandleNameAndType(SYSTEM_HANDLE_INFORMATION shi,
     HRESULT                     hr = E_UNEXPECTED;
     HANDLE                      hRemoteProcess = NULL,
                                 hObject = NULL;
-    ZwQueryObject	            fnZwQueryObject = NULL;
+    ZwQueryObject               fnZwQueryObject = NULL;
     ULONG			            ulRet,
                                 cbObjectTypeInformation = 1024 * 2;
     PBYTE			            ObjectTypeInformation = NULL;
@@ -1117,7 +1117,10 @@ int wmain(int argc, WCHAR **argv)
 
         for (DWORD i = 0; i < MAX_TYPENAMES; i++)
         {
-            if (g_rgpwzTypeNames[i]) wprintf(L"%-7u | %s\n", i, g_rgpwzTypeNames[i]);
+            if (g_rgpwzTypeNames[i])
+            {
+                wprintf(L"%-7u | %s\n", i, g_rgpwzTypeNames[i]);
+            }
         }
 
         return S_OK;
