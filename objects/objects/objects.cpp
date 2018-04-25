@@ -608,12 +608,61 @@ ErrorExit:
 
 // enumerate all objects in the Windows object namespace
 // beginning with a given a starting point
+//
+// does not provide support for recursion
+//
+// example at:
+//    http://pastebin.com/embed_js/zhmJTffK
+//    https://randomsourcecode.wordpress.com/2015/03/14/enumerating-deviceobjects-from-user-mode/
+//    https://msdn.microsoft.com/en-us/library/bb470238(v=vs.85).aspx
+//
 HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
 {
-    HRESULT hr = E_UNEXPECTED;
+    HRESULT                 hr = E_UNEXPECTED;
+    NTSTATUS                ntStatus;
+    NTQUERYDIRECTORYOBJECT  NtQueryDirectoryObject = NULL;
+    BYTE                    rgDirObjInfoBuffer[1024 * 8] = { 0 };
+    POBJDIR_INFORMATION     pObjDirInfo = (POBJDIR_INFORMATION)rgDirObjInfoBuffer;
+    HANDLE                  hRootDir = NULL;
+    DWORD                   dwIndex = 0;
 
+    // look up address of NtQueryDirectoryObject as exported from ntdll
+    // while NtQueryDirectoryObject is documented on MSDN, there is no
+    // associated header or import library
+    NtQueryDirectoryObject = (NTQUERYDIRECTORYOBJECT)GetProcAddress(GetModuleHandleA("ntdll"), "NtQueryDirectoryObject");
+    if (NULL == NtQueryDirectoryObject)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto ErrorExit;
+    }
+
+    // open the caller-provided root directory
+    hr = OpenDirectory(pwzRoot, &hRootDir);
+    if (FAILED(hr))
+    {
+        goto ErrorExit;
+    }
+
+    do
+    {
+        ntStatus = NtQueryDirectoryObject(hRootDir,
+                                          pObjDirInfo,
+                                          sizeof(rgDirObjInfoBuffer),
+                                          TRUE,
+                                          FALSE,
+                                          &dwIndex,
+                                          NULL);
+
+        dwIndex++;
+
+    } while (TRUE);
 
 ErrorExit:
+
+    if (NULL != hRootDir)
+    {
+        (void)CloseHandle(hRootDir);
+    }
 
     return hr;
 }
@@ -636,6 +685,8 @@ ErrorExit:
 HRESULT EnumerateBaseNamedObjects()
 {
     HRESULT hr = E_UNEXPECTED;
+
+    hr = EnumerateObjectNamespace(L"\\Sessions\BNOLINKS");
 
 ErrorExit:
 
@@ -778,7 +829,8 @@ VOID InitializeObjectNumberToNameMap()
 
     if (NULL != hDirectory)
     {
-        (void)CloseHandle(&hDirectory);
+        // bugbug: close this HANDLE
+        // (void)CloseHandle(&hDirectory);
     }
 
     if (NULL != hIoCompletionPort)
@@ -887,7 +939,7 @@ int wmain(int argc, WCHAR **argv)
 
         return S_OK;
     }
-    else if (0 == wcscmp(L"--basednamedobjects", argv[1]))
+    else if (0 == wcscmp(L"--basenamedobjects", argv[1]))
     {
         return EnumerateBaseNamedObjects();
     }
