@@ -520,7 +520,9 @@ HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackPara
 
     dwCountSystemHandles = *(PULONG)(pSysInfoBuffer);
 
-    pSystemHandleInfoBuffer = (PSYSTEM_HANDLE_INFORMATION)((PULONG)pSysInfoBuffer + 1);
+    // the array of SYSTEM_HANDLE_INFORMATION structures starts after the initial count
+    // the count is pointer-width so the offset is architecture-dependent
+    pSystemHandleInfoBuffer = (PSYSTEM_HANDLE_INFORMATION)((PBYTE)pSysInfoBuffer + sizeof(PVOID));
 
     // loop over all returned SYSTEM_HANDLE_INFORMATION instances,
     // invoking the caller-provided callback function for each
@@ -625,6 +627,7 @@ HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
     POBJDIR_INFORMATION     pObjDirInfo = (POBJDIR_INFORMATION)rgDirObjInfoBuffer;
     HANDLE                  hRootDir = NULL;
     DWORD                   dwIndex = 0;
+    WCHAR                   wzSessionPath[MAX_PATH];
 
     // look up address of NtQueryDirectoryObject as exported from ntdll
     // while NtQueryDirectoryObject is documented on MSDN, there is no
@@ -662,6 +665,17 @@ HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot)
 
         wprintf(L"%-20s | %s\n", pObjDirInfo->ObjectName.Buffer, pObjDirInfo->ObjectTypeName.Buffer);
 
+        hr = StringCchPrintfW(wzSessionPath, MAX_PATH, L"%s\\%s", pwzRoot, pObjDirInfo->ObjectName.Buffer);
+        if (FAILED(hr))
+        {
+            goto ErrorExit;
+        }
+
+        HANDLE h;
+        hr = OpenDirectory(wzSessionPath, &h);
+
+        int x = 6;
+
     } while (TRUE);
 
 ErrorExit:
@@ -693,7 +707,9 @@ HRESULT EnumerateBaseNamedObjects()
 {
     HRESULT hr = E_UNEXPECTED;
 
-    hr = EnumerateObjectNamespace(L"\\Sessions\\BNOLINKS");
+    //hr = EnumerateObjectNamespace(L"\\Sessions\\BNOLINKS");
+
+    hr = EnumerateObjectNamespace(L"\\Sessions\\1\\BaseNamedObjects");
 
 ErrorExit:
 
