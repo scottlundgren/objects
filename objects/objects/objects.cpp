@@ -877,9 +877,12 @@ int wmain(int argc, WCHAR **argv)
     }
     else if (0 == wcscmp(L"--objecttypes", argv[1]))
     {
+        printf("TypeNum | TypeName\n");
+        printf("------- + ---------------------------\n");
+
         for (DWORD i = 0; i < MAX_TYPENAMES; i++)
         {
-            if (g_rgpwzTypeNames[i]) wprintf(L"%s\n", g_rgpwzTypeNames[i]);
+            if (g_rgpwzTypeNames[i]) wprintf(L"%-7u | %s\n", i, g_rgpwzTypeNames[i]);
         }
 
         return S_OK;
