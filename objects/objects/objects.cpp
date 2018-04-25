@@ -811,24 +811,49 @@ VOID InitializeObjectNumberToNameMap()
     }
 }
 
+void usage()
+{
+    printf("objects\n\n");
+    printf("--handles           enumerates HANDLEs across all processes\n");
+    printf("--objecttypes       provides a partial mapping of object type numbers to names\n");
+    printf("--basenamedobjects  enumerates BasedNamedObjects directories\n\n");
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     HRESULT hr = E_UNEXPECTED;
 
     // initialize the global mapping of object type numbers to object names
     // this is done to provide a human-readable version of the object type
+    //
+    // this is a best-effort function - it populates as many of the object
+    // type number to type name mappings as it can
     InitializeObjectNumberToNameMap();
 
-#ifdef _DEBUG
-    for (DWORD i = 0; i < MAX_TYPENAMES; i++)
+    // usage is to provide exactly one argument
+    if (2 != argc)
     {
-        if (g_rgpwzTypeNames[i]) wprintf(L"%s\n", g_rgpwzTypeNames[i]);
+        usage();
     }
-    wprintf(L"\n\n");
-#endif // DEBUG
+    else if (0 == wcscmp(L"--handles", argv[1]))
+    {
+        return EnumerateHandles(LookupHandleInfoAndOutput, NULL);
+    }
+    else if (0 == wcscmp(L"--objecttypes", argv[1]))
+    {
+        for (DWORD i = 0; i < MAX_TYPENAMES; i++)
+        {
+            if (g_rgpwzTypeNames[i]) wprintf(L"%s\n", g_rgpwzTypeNames[i]);
+        }
 
-
-    hr = EnumerateHandles(LookupHandleInfoAndOutput, NULL);
-
-    return 0;
+        return S_OK;
+    }
+    else if (0 == wcscmp(L"--basednamedobjects", argv[1]))
+    {
+        // todo: do this and stuff
+    }
+    else
+    {
+        return E_INVALIDARG;
+    }
 }
