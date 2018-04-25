@@ -9,6 +9,7 @@ static PWCHAR   g_rgpwzTypeNames[MAX_TYPENAMES] = { NULL };
 static DWORD    g_dwFileTypeNumber = -1;
 
 HRESULT EnumerateHandles(ENUMHANDLESCALLBACKPROC fnCallback, PVOID pCallbackParam);
+HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot, ENUMOBJECTSCALLBACKPROC fnCallback, PVOID pCallbackParam);
 
 // wrapper around ntdll!NtStatusToDosError
 //
@@ -652,6 +653,15 @@ ErrorExit:
     return hr;
 }
 
+BOOL CALLBACK BaseNamedObjectsCallbackProc(POBJDIR_INFORMATION pObjDirInfo, PVOID p)
+{
+    static BOOL fNeedToOutputHeaders = TRUE;
+
+    wprintf(L"%-4s | %-20s | %s\n", (PWCHAR)p, pObjDirInfo->ObjectTypeName.Buffer, pObjDirInfo->ObjectName.Buffer);
+
+    return TRUE;
+}
+
 // callback function to be invoked for each object discovered in
 // the windows object directory "\Sessions\BNOLINKS"
 //
@@ -729,7 +739,7 @@ BOOL CALLBACK EnumerateBaseNamedObjectsLinks(POBJDIR_INFORMATION pObjDirInfo, PV
         goto ErrorExit;
     }
 
-    wprintf(L"%-20s | %s\n", pObjDirInfo->ObjectName.Buffer, usSymbolicLinkTarget.Buffer);
+    EnumerateObjectNamespace(usSymbolicLinkTarget.Buffer, BaseNamedObjectsCallbackProc, pObjDirInfo->ObjectName.Buffer);
 
     hr = S_OK;
 
@@ -801,7 +811,7 @@ HRESULT EnumerateObjectNamespace(PWCHAR pwzRoot, ENUMOBJECTSCALLBACKPROC fnCallb
             break;
         }
 
-        if (!fnCallback(pObjDirInfo, pwzRoot))
+        if (!fnCallback(pObjDirInfo, pCallbackParam))
         {
             hr = S_FALSE;
             goto ErrorExit;
