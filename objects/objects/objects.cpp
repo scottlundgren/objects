@@ -525,12 +525,16 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
     WCHAR       wzName[1024] = L"",
                 wzType[1024] = L"";
     static BOOL fNeedToPrintHeader = TRUE;
+    DWORD        dwSessionId = (DWORD)-1;
+
+    // best effort to determine terminal services session ID from the process ID
+    (void)ProcessIdToSessionId(shi.ProcessId, &dwSessionId);
 
     // print column headers
     if (fNeedToPrintHeader)
     {
-        wprintf(L"%s | %4s | %-16s | %-10s | %s\n", L"PID ", L"Type", L"Type Name", L"HANDLE", L"Name");
-        wprintf(L"%s + %s + %s + %s + %s\n", L"----", L"----", L"----------------", L"----------", L"-----------------------------------------");
+        wprintf(L"%s | %s | %4s | %-16s | %-10s | %s\n", L"SID", L"PID ", L"Type", L"Type Name", L"HANDLE", L"Name");
+        wprintf(L"%s + %s + %s + %s + %s + %s\n", L"---", L"----", L"----", L"----------------", L"----------", L"-----------------------------------------");
 
         fNeedToPrintHeader = FALSE;
     }
@@ -552,7 +556,7 @@ HRESULT PrintRemoteHandleInfo(SYSTEM_HANDLE_INFORMATION shi)
             return hr;
         }
 
-        wprintf(L"%4d | %4d | %-16s | 0x%0.8X | %s\n", shi.ProcessId, shi.ObjectTypeNumber, wzType, shi.Handle, wzName);
+        wprintf(L"%3d | %4d | %4d | %-16s | 0x%0.8X | %s\n", dwSessionId, shi.ProcessId, shi.ObjectTypeNumber, wzType, shi.Handle, wzName);
     }
 
     return hr;
